@@ -65,7 +65,7 @@ lotus-miner run --wdpost=true --wnpost=true --p2p=false --sctype=alloce --sclist
 
 **Window-post-miner**（负责窗口抽查证明）配置为：
 ```sh
-lotus-miner run --wdpost=true --wnpost=false --p2p=false --sctype=alloce --sclisten=192.168.1.50:1357
+lotus-miner run --wdpost=true --wnpost=false --p2p=false
 ```
 
 **Winning-post-miner**（负责出块的证明）配置为：
