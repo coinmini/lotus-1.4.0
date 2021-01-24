@@ -17,8 +17,7 @@ Filecoin 挖矿软件分布式Miner版本，支持PoSt-miner、Deal-miner、Seal
   - Seal-miner：负责普通扇区密封的任务分配。
 - 调度管理基于自定义的任务数量，可以精确控制机器的工作状态
 
-![image]
-(https://github.com/moran666666/lotus-1.4.0/blob/master/documentation/images/WX20210124-204732%402x.png)
+![Image text](https://github.com/moran666666/lotus-1.4.0/blob/master/documentation/images/WX20210124-204732%402x.png)
 
 ## 实现思路
 **1. 解决SectorID不重复**
