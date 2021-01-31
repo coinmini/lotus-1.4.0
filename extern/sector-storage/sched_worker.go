@@ -45,8 +45,9 @@ func (sh *scheduler) runWorker(ctx context.Context, w Worker) error {
 		active:    &activeResources{},
 		enabled:   true,
 
-		closingMgr:   make(chan struct{}),
-		closedMgr:    make(chan struct{}),
+		closingMgr: make(chan struct{}),
+		closedMgr:  make(chan struct{}),
+		//下面两个属性是默然加的
 		workerOnFree: make(chan struct{}),
 		todo:         make([]*workerRequest, 0),
 	}
@@ -83,6 +84,7 @@ func (sh *scheduler) runWorker(ctx context.Context, w Worker) error {
 	return nil
 }
 
+// worker的handle
 func (sw *schedWorker) handleWorker() {
 	worker, sched := sw.worker, sw.sched
 
@@ -105,19 +107,27 @@ func (sw *schedWorker) handleWorker() {
 
 	defer sw.heartbeatTimer.Stop()
 
+	//这是无限循环
 	for {
 		{
 			sched.workersLk.Lock()
 			enabled := worker.enabled
 			sched.workersLk.Unlock()
 
+			// 默然加的，这里实现了空闲worker的调度，不让worker有空闲，这个厉害
 			if enabled { // ask for more windows if we need them (non-blocking)
+				/**
+					case <-sh.workerChange:
+					sh.trySched()
+				**/
+
 				sched.workerChange <- struct{}{} // worker空闲申请调度
 			}
 		}
 
+		//这里加了几句解释的话，逻辑都变了，主要是检查 worker的session
 		for { // 循环等待woker做完任务返回或有调度窗口进来，// wait for more windows to come in, or for tasks to get finished (blocking)
-			if !sw.checkSession(ctx) { // ping the worker and check session 如果连接不上，禁用后一直试探；如果检查发现session id不一致则弃用
+			if !sw.checkSession(ctx) { // ping the worker and check session 如果连接不上worker的session，禁用后一直试探；如果检查发现session id不一致则弃用
 				return // invalid session / exiting
 			}
 
@@ -132,6 +142,7 @@ func (sw *schedWorker) handleWorker() {
 				}
 			}
 
+			//检查worker有没有free，如果free就报task done
 			select {
 			case <-sw.heartbeatTimer.C:
 			case <-worker.workerOnFree:
@@ -146,6 +157,7 @@ func (sw *schedWorker) handleWorker() {
 	}
 }
 
+// disable一些worker
 func (sw *schedWorker) disable(ctx context.Context) error {
 	done := make(chan struct{})
 
@@ -179,6 +191,7 @@ func (sw *schedWorker) disable(ctx context.Context) error {
 	return nil
 }
 
+//检查worker的session id
 func (sw *schedWorker) checkSession(ctx context.Context) bool {
 	for {
 		sctx, scancel := context.WithTimeout(ctx, stores.HeartbeatInterval/2)
@@ -226,6 +239,7 @@ func (sw *schedWorker) checkSession(ctx context.Context) bool {
 	}
 }
 
+//请求窗口
 func (sw *schedWorker) requestWindows() bool {
 	for ; sw.windowsRequested < SchedWindows; sw.windowsRequested++ {
 		select {
@@ -242,6 +256,7 @@ func (sw *schedWorker) requestWindows() bool {
 	return true
 }
 
+// 更新等待状态
 func (sw *schedWorker) waitForUpdates() (update bool, sched bool, ok bool) {
 	select {
 	case <-sw.heartbeatTimer.C:
@@ -261,6 +276,7 @@ func (sw *schedWorker) waitForUpdates() (update bool, sched bool, ok bool) {
 	return false, false, false
 }
 
+//压缩窗口，从一个窗口到另外一个窗口
 func (sw *schedWorker) workerCompactWindows() {
 	worker := sw.worker
 
@@ -314,6 +330,7 @@ func (sw *schedWorker) workerCompactWindows() {
 	sw.windowsRequested -= compacted
 }
 
+//分配窗口
 func (sw *schedWorker) processAssignedWindows() {
 	worker := sw.worker
 
@@ -438,6 +455,7 @@ func (sw *schedWorker) startProcessingTask(taskDone chan struct{}, req *workerRe
 	return nil
 }
 
+//清空worker
 func (sh *scheduler) workerCleanup(wid WorkerID, w *workerHandle) {
 	select {
 	case <-w.closingMgr:

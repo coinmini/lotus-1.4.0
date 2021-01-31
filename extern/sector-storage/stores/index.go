@@ -250,26 +250,37 @@ func (i *Index) StorageDropSector(ctx context.Context, storageID ID, s abi.Secto
 	return nil
 }
 
+// 在存储id :f88b0231-66bd-4fe7-886a-cd419a1d4ab9 里面寻找sector， allowFetch 不用从远程拉取这个目录
 func (i *Index) StorageFindSector(ctx context.Context, s abi.SectorID, ft storiface.SectorFileType, ssize abi.SectorSize, allowFetch bool) ([]SectorStorageInfo, error) {
 	i.lk.RLock()
 	defer i.lk.RUnlock()
 
 	storageIDs := map[ID]uint64{}
+
+	//是否是主要的，bool
 	isprimary := map[ID]bool{}
 
+	//var PathTypes = []SectorFileType{FTUnsealed, FTSealed, FTCache}， 0 ，1 ，2
+	// ft storiface.SectorFileType 和上面是一对一的， 0， 1， 2
+
+	//如果需要找到ft，sectors 是sealed 类型，
 	for _, pathType := range storiface.PathTypes {
 		if ft&pathType == 0 {
 			continue
 		}
 
+		//通过sector ID 和 PathType 寻找
+		//按一定的顺序从index的所有sectors里面找这个sector的ID
 		for _, id := range i.sectors[Decl{s, pathType}] {
 			storageIDs[id.storage]++
 			isprimary[id.storage] = isprimary[id.storage] || id.primary
 		}
 	}
 
+	//创建一个out数组，里面有一个空的sector的数据
 	out := make([]SectorStorageInfo, 0, len(storageIDs))
 
+	// id：f88b0231-66bd-4fe7-886a-cd419a1d4ab9
 	for id, n := range storageIDs {
 		st, ok := i.stores[id]
 		if !ok {
@@ -277,6 +288,7 @@ func (i *Index) StorageFindSector(ctx context.Context, s abi.SectorID, ft storif
 			continue
 		}
 
+		//找路径
 		urls := make([]string, len(st.info.URLs))
 		for k, u := range st.info.URLs {
 			rl, err := url.Parse(u)
@@ -284,6 +296,7 @@ func (i *Index) StorageFindSector(ctx context.Context, s abi.SectorID, ft storif
 				return nil, xerrors.Errorf("failed to parse url: %w", err)
 			}
 
+			//获得path, /root/.lotusminer/sealed/s-t08157-9999
 			rl.Path = gopath.Join(rl.Path, ft.String(), storiface.SectorName(s))
 			urls[k] = rl.String()
 		}
@@ -300,6 +313,7 @@ func (i *Index) StorageFindSector(ctx context.Context, s abi.SectorID, ft storif
 		})
 	}
 
+	//false不用读下去了
 	if allowFetch {
 		spaceReq, err := ft.SealSpaceUse(ssize)
 		if err != nil {
@@ -369,12 +383,15 @@ func (i *Index) StorageInfo(ctx context.Context, id ID) (StorageInfo, error) {
 	return *si.info, nil
 }
 
+// 是用空间作为最基本的判断标准，没有综合考虑 内存，cpu。
+
 func (i *Index) StorageBestAlloc(ctx context.Context, allocate storiface.SectorFileType, ssize abi.SectorSize, pathType storiface.PathType) ([]StorageInfo, error) {
 	i.lk.RLock()
 	defer i.lk.RUnlock()
 
 	var candidates []storageEntry
 
+	// 检查空间需求：输入参数为 32G，是cache ，sealed 还是unselad的类型。因为cache 需要 385G，sealed 和unsealed都需要32G
 	spaceReq, err := allocate.SealSpaceUse(ssize)
 	if err != nil {
 		return nil, xerrors.Errorf("estimating required space: %w", err)

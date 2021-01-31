@@ -55,6 +55,7 @@ type SectorManager interface {
 	FaultTracker
 }
 
+// worker的id，lotus-miner sealing jobs 那里显示的；注意不是storage ID
 type WorkerID uuid.UUID // worker session UUID
 var ClosedWorkerID = uuid.UUID{}
 
@@ -73,6 +74,7 @@ type Manager struct {
 
 	storage.Prover
 
+	//加锁 sync.Mutex 是一互锁变量
 	workLk sync.Mutex
 	work   *statestore.StateStore
 
@@ -92,7 +94,7 @@ type result struct {
 type SealerConfig struct {
 	ParallelFetchLimit int
 
-	// Local worker config
+	// Local worker config， 这里就是指miner上面的worker
 	AllowAddPiece   bool
 	AllowPreCommit1 bool
 	AllowPreCommit2 bool
@@ -105,19 +107,25 @@ type StorageAuth http.Header
 type WorkerStateStore *statestore.StateStore
 type ManagerStateStore *statestore.StateStore
 
+// 新起一个manager
 func New(ctx context.Context, ls stores.LocalStorage, si stores.SectorIndex, sc SealerConfig, urls URLs, sa StorageAuth, wss WorkerStateStore, mss ManagerStateStore) (*Manager, error) {
+
+	//新建一个local worker的local store
 	lstor, err := stores.NewLocal(ctx, ls, si, urls)
 	if err != nil {
 		return nil, err
 	}
 
+	//跟证明有关的
 	prover, err := ffiwrapper.New(&readonlyProvider{stor: lstor, index: si})
 	if err != nil {
 		return nil, xerrors.Errorf("creating prover instance: %w", err)
 	}
 
+	//里面的远程store
 	stor := stores.NewRemote(lstor, si, http.Header(sa), sc.ParallelFetchLimit)
 
+	// 定义manager
 	m := &Manager{
 		ls:         ls,
 		storage:    stor,
@@ -136,13 +144,18 @@ func New(ctx context.Context, ls stores.LocalStorage, si stores.SectorIndex, sc 
 		waitRes:    map[WorkID]chan struct{}{},
 	}
 
+	// 设置worker路径
 	m.setupWorkTracker()
 
+	// 设置manager的调度
 	go m.sched.runSched()
 
+	//miner的localworker 默认包含的
 	localTasks := []sealtasks.TaskType{
 		sealtasks.TTCommit1, sealtasks.TTFinalize, sealtasks.TTFetch, sealtasks.TTReadUnsealed,
 	}
+
+	//miner的worker 把 各个证明过程设置为true or false
 	if sc.AllowAddPiece {
 		localTasks = append(localTasks, sealtasks.TTAddPiece)
 	}
@@ -159,6 +172,7 @@ func New(ctx context.Context, ls stores.LocalStorage, si stores.SectorIndex, sc 
 		localTasks = append(localTasks, sealtasks.TTUnseal)
 	}
 
+	//miner增加local worker
 	err = m.AddWorker(ctx, NewLocalWorker(WorkerConfig{
 		TaskTypes: localTasks,
 	}, stor, lstor, si, m, wss))
@@ -169,6 +183,7 @@ func New(ctx context.Context, ls stores.LocalStorage, si stores.SectorIndex, sc 
 	return m, nil
 }
 
+//manager 的添加local storage方法
 func (m *Manager) AddLocalStorage(ctx context.Context, path string) error {
 	path, err := homedir.Expand(path)
 	if err != nil {
@@ -187,18 +202,22 @@ func (m *Manager) AddLocalStorage(ctx context.Context, path string) error {
 	return nil
 }
 
+//manager的添加worker方法
 func (m *Manager) AddWorker(ctx context.Context, w Worker) error {
 	return m.sched.runWorker(ctx, w)
 }
 
+//manager的http模块，用于远程fetch
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	m.remoteHnd.ServeHTTP(w, r)
 }
 
+//没有worker调度？
 func schedNop(context.Context, Worker) error {
 	return nil
 }
 
+//manager的调度功能的fetch， m的方法schedFetch；结构体+函数构成了，结构体的方法。
 func (m *Manager) schedFetch(sector storage.SectorRef, ft storiface.SectorFileType, ptype storiface.PathType, am storiface.AcquireMode) func(context.Context, Worker) error {
 	return func(ctx context.Context, worker Worker) error {
 		_, err := m.waitSimpleCall(ctx)(worker.Fetch(ctx, sector, ft, ptype, am))
@@ -219,6 +238,7 @@ func (m *Manager) readPiece(sink io.Writer, sector storage.SectorRef, offset sto
 	}
 }
 
+//寻找unseal的sector
 func (m *Manager) tryReadUnsealedPiece(ctx context.Context, sink io.Writer, sector storage.SectorRef, offset storiface.UnpaddedByteIndex, size abi.UnpaddedPieceSize) (foundUnsealed bool, readOk bool, selector WorkerSelector, returnErr error) {
 
 	// acquire a lock purely for reading unsealed sectors
@@ -254,6 +274,7 @@ func (m *Manager) tryReadUnsealedPiece(ctx context.Context, sink io.Writer, sect
 	return
 }
 
+//unseal方法，需要使用上面的tryReadUnsealedPiece方法
 func (m *Manager) ReadPiece(ctx context.Context, sink io.Writer, sector storage.SectorRef, offset storiface.UnpaddedByteIndex, size abi.UnpaddedPieceSize, ticket abi.SealRandomness, unsealed cid.Cid) error {
 	foundUnsealed, readOk, selector, err := m.tryReadUnsealedPiece(ctx, sink, sector, offset, size)
 	if err != nil {
@@ -314,6 +335,7 @@ func (m *Manager) NewSector(ctx context.Context, sector storage.SectorRef) error
 	return nil
 }
 
+//AP方法
 func (m *Manager) AddPiece(ctx context.Context, sector storage.SectorRef, existingPieces []abi.UnpaddedPieceSize, sz abi.UnpaddedPieceSize, r io.Reader) (abi.PieceInfo, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -322,8 +344,15 @@ func (m *Manager) AddPiece(ctx context.Context, sector storage.SectorRef, existi
 		return abi.PieceInfo{}, xerrors.Errorf("acquiring sector lock: %w", err)
 	}
 
+	// WorkerSelector 类型不知道在哪
 	var selector WorkerSelector
 	var err error
+	// 某个worker上面有没有AP在做：
+	// existingPieces是检查 secotor里面有没有piece，如果有piece，比如有交易订单，就用newExistingSelector，用当前的sector，
+	//false的意思是 不用远程拉取，就在当前worker上面。
+
+	//如果没有piece，就用 newAllocSelector 生产新的sector
+
 	if len(existingPieces) == 0 { // new
 		selector = newAllocSelector(m.index, storiface.FTUnsealed, storiface.PathSealing)
 	} else { // use existing
@@ -349,6 +378,7 @@ func (m *Manager) SealPreCommit1(ctx context.Context, sector storage.SectorRef, 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	//检查task是不是已经在运行m.getWork（） returns wait=true when the task is already tracked/running
 	wk, wait, cancel, err := m.getWork(ctx, sealtasks.TTPreCommit1, sector, ticket, pieces)
 	if err != nil {
 		return nil, xerrors.Errorf("getWork: %w", err)
@@ -356,6 +386,8 @@ func (m *Manager) SealPreCommit1(ctx context.Context, sector storage.SectorRef, 
 	defer cancel()
 
 	var waitErr error
+
+	//等待任务分配
 	waitRes := func() {
 		p, werr := m.waitWork(ctx, wk)
 		if werr != nil {
@@ -378,6 +410,7 @@ func (m *Manager) SealPreCommit1(ctx context.Context, sector storage.SectorRef, 
 
 	// TODO: also consider where the unsealed data sits
 
+	// P1肯定是要做新的sector，远程或者本地都可以,毕竟AP只是传过来32G
 	selector := newAllocSelector(m.index, storiface.FTCache|storiface.FTSealed, storiface.PathSealing)
 
 	err = m.sched.Schedule(ctx, sector, sealtasks.TTPreCommit1, selector, m.schedFetch(sector, storiface.FTUnsealed, storiface.PathSealing, storiface.AcquireMove), func(ctx context.Context, w Worker) error {
@@ -427,8 +460,16 @@ func (m *Manager) SealPreCommit2(ctx context.Context, sector storage.SectorRef, 
 		return storage.SectorCids{}, xerrors.Errorf("acquiring sector lock: %w", err)
 	}
 
+	//这里 P2不让用远程fetch，而是用本地的
+	//原来这里true，默然把这里改成了false
+	// NOTE: We set allowFetch to false in so that we always execute on a worker
+	// with direct access to the data. We want to do that because this step is
+	// generally very cheap / fast, and transferring data is not worth the effort
+
+	//用已有的 newExistingSelector，因为是在同一台设备上。
 	selector := newExistingSelector(m.index, sector.ID, storiface.FTCache|storiface.FTSealed, false)
 
+	//把selector 传入Schedule里面
 	err = m.sched.Schedule(ctx, sector, sealtasks.TTPreCommit2, selector, m.schedFetch(sector, storiface.FTCache|storiface.FTSealed, storiface.PathSealing, storiface.AcquireMove), func(ctx context.Context, w Worker) error {
 		err := m.startWork(ctx, w, wk)(w.SealPreCommit2(ctx, sector, phase1Out))
 		if err != nil {
@@ -521,6 +562,7 @@ func (m *Manager) SealCommit2(ctx context.Context, sector storage.SectorRef, pha
 		return out, waitErr
 	}
 
+	// C2的选择， 调用的  selector_task.go 里面的 newTaskSelector函数
 	selector := newTaskSelector()
 
 	err = m.sched.Schedule(ctx, sector, sealtasks.TTCommit2, selector, schedNop, func(ctx context.Context, w Worker) error {
@@ -550,6 +592,7 @@ func (m *Manager) FinalizeSector(ctx context.Context, sector storage.SectorRef, 
 
 	unsealed := storiface.FTUnsealed
 	{
+		// 寻找index里面的 unsealed sector， 在P1上面
 		unsealedStores, err := m.index.StorageFindSector(ctx, sector.ID, storiface.FTUnsealed, 0, false)
 		if err != nil {
 			return xerrors.Errorf("finding unsealed sector: %w", err)
@@ -560,6 +603,7 @@ func (m *Manager) FinalizeSector(ctx context.Context, sector storage.SectorRef, 
 		}
 	}
 
+	// 不从远程拉取，有sector ID，
 	selector := newExistingSelector(m.index, sector.ID, storiface.FTCache|storiface.FTSealed, false)
 
 	err := m.sched.Schedule(ctx, sector, sealtasks.TTFinalize, selector,
@@ -572,6 +616,7 @@ func (m *Manager) FinalizeSector(ctx context.Context, sector storage.SectorRef, 
 		return err
 	}
 
+	// 要拉到 storage里面去
 	fetchSel := newAllocSelector(m.index, storiface.FTCache|storiface.FTSealed, storiface.PathStorage)
 	moveUnsealed := unsealed
 	{

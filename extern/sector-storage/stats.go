@@ -8,6 +8,7 @@ import (
 	"github.com/filecoin-project/lotus/extern/sector-storage/storiface"
 )
 
+// 通过 worker 的 uuid，后去worker的资源，cpu，mem，gpu
 func (m *Manager) WorkerStats() map[uuid.UUID]storiface.WorkerStats {
 	m.sched.workersLk.RLock()
 	defer m.sched.workersLk.RUnlock()
@@ -29,6 +30,7 @@ func (m *Manager) WorkerStats() map[uuid.UUID]storiface.WorkerStats {
 	return out
 }
 
+//后去worker当前的jobs
 func (m *Manager) WorkerJobs() map[uuid.UUID][]storiface.WorkerJob {
 	out := map[uuid.UUID][]storiface.WorkerJob{}
 	calls := map[storiface.CallID]struct{}{}

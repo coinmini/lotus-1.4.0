@@ -12,6 +12,9 @@ import (
 	"github.com/filecoin-project/lotus/extern/sector-storage/storiface"
 )
 
+//index The Index is a singleton holding metadata about storage paths, and a mapping of sector files to paths
+//PathType 是指是storage 还是seal 的目录
+//SectorFileType 有 unsealed sealed cache
 type allocSelector struct {
 	index stores.SectorIndex
 	alloc storiface.SectorFileType
@@ -70,6 +73,7 @@ func (s *allocSelector) Cmp(ctx context.Context, task sealtasks.TaskType, a, b *
 
 var _ WorkerSelector = &allocSelector{}
 
+// 默然的加的，只能同一个 storage ID 才可以
 func (s *allocSelector) FindDataWoker(ctx context.Context, task sealtasks.TaskType, sid abi.SectorID, spt abi.RegisteredSealProof, whnd *workerHandle) bool {
 	paths, err := whnd.workerRpc.Paths(ctx)
 	if err != nil {

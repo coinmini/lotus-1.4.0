@@ -83,6 +83,7 @@ type path struct {
 	reservations map[abi.SectorID]storiface.SectorFileType
 }
 
+//获取path的路径和使用情况
 func (p *path) stat(ls LocalStorage) (fsutil.FsStat, error) {
 	stat, err := ls.Stat(p.local)
 	if err != nil {
@@ -130,10 +131,12 @@ func (p *path) stat(ls LocalStorage) (fsutil.FsStat, error) {
 	return stat, err
 }
 
+//获取每个扇区的path
 func (p *path) sectorPath(sid abi.SectorID, fileType storiface.SectorFileType) string {
 	return filepath.Join(p.local, fileType.String(), storiface.SectorName(sid))
 }
 
+//添加新的local 路径
 func NewLocal(ctx context.Context, ls LocalStorage, index SectorIndex, urls []string) (*Local, error) {
 	l := &Local{
 		localStorage: ls,
@@ -145,22 +148,54 @@ func NewLocal(ctx context.Context, ls LocalStorage, index SectorIndex, urls []st
 	return l, l.open(ctx)
 }
 
+//Local 打开路径，能找到就行，不需要返回
 func (st *Local) OpenPath(ctx context.Context, p string) error {
 	st.localLk.Lock()
 	defer st.localLk.Unlock()
+
+	//golan系统包读取文件
+	//MetaFile = "sectorstore.json"， 拼接这个路径如/mnt/lotusworker/sectorstore.json
+	/**
+		{
+		"ID": "f88b0231-66bd-4fe7-886a-cd419a1d4ab9",
+		"Weight": 10,
+		"CanSeal": true,
+		"CanStore": true
+		}
+	**/
 
 	mb, err := ioutil.ReadFile(filepath.Join(p, MetaFile))
 	if err != nil {
 		return xerrors.Errorf("reading storage metadata for %s: %w", p, err)
 	}
 
+	/**
+		type LocalStorageMeta struct {
+		ID ID
+
+		// A high weight means data is more likely to be stored in this path
+		Weight uint64 // 0 = readonly
+
+		// Intermediate data for the sealing process will be stored here
+		CanSeal bool
+
+		// Finalized sectors that will be proved over time will be stored here
+		CanStore bool
+	}
+		**/
 	var meta LocalStorageMeta
+
+	// 看看mb拼接的路径和 定义的meta路径是否一致
+	//Go生成json和解json数据都很简单
+	//json.Marshal( )生成数据，调用json.Unmarshal( )
+	//mb和meta对应，把mb的json数据 存到meta的struct里面
 	if err := json.Unmarshal(mb, &meta); err != nil {
 		return xerrors.Errorf("unmarshalling storage metadata for %s: %w", p, err)
 	}
 
 	// TODO: Check existing / dedupe
 
+	// 干嘛用的呢
 	out := &path{
 		local: p,
 
@@ -173,6 +208,7 @@ func (st *Local) OpenPath(ctx context.Context, p string) error {
 		return err
 	}
 
+	//attach新的path
 	err = st.index.StorageAttach(ctx, StorageInfo{
 		ID:       meta.ID,
 		URLs:     st.urls,
@@ -184,15 +220,19 @@ func (st *Local) OpenPath(ctx context.Context, p string) error {
 		return xerrors.Errorf("declaring storage in index: %w", err)
 	}
 
+	//声明扇区，输入参数 路径，storage ID， 是否可以存储
+	//检查当前是filetype 是cache，sealed，unsealed
 	if err := st.declareSectors(ctx, p, meta.ID, meta.CanStore); err != nil {
 		return err
 	}
 
+	//
 	st.paths[meta.ID] = out
 
 	return nil
 }
 
+//
 func (st *Local) open(ctx context.Context) error {
 	cfg, err := st.localStorage.GetStorage()
 	if err != nil {
@@ -211,6 +251,7 @@ func (st *Local) open(ctx context.Context) error {
 	return nil
 }
 
+//自检一遍存储路径吗？
 func (st *Local) Redeclare(ctx context.Context) error {
 	st.localLk.Lock()
 	defer st.localLk.Unlock()
@@ -255,8 +296,14 @@ func (st *Local) Redeclare(ctx context.Context) error {
 	return nil
 }
 
+//声明sectors的位置 是在cache，sealed，unsealed 里面哪一个
 func (st *Local) declareSectors(ctx context.Context, p string, id ID, primary bool) error {
+	//PathTypes 包含 cache，sealed，unsealed
+	// id 是 meta.ID 就是storage ID
+	// primary 是CanStore 的bool
 	for _, t := range storiface.PathTypes {
+
+		//把 p= /mnt/lotusworker/ 和cache，sealed，unsealed 组合
 		ents, err := ioutil.ReadDir(filepath.Join(p, t.String()))
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -266,6 +313,7 @@ func (st *Local) declareSectors(ctx context.Context, p string, id ID, primary bo
 
 				continue
 			}
+			// 找不到路径报错
 			return xerrors.Errorf("listing %s: %w", filepath.Join(p, t.String()), err)
 		}
 
@@ -288,6 +336,7 @@ func (st *Local) declareSectors(ctx context.Context, p string, id ID, primary bo
 	return nil
 }
 
+//定时检查存储路径是否健康
 func (st *Local) reportHealth(ctx context.Context) {
 	// randomize interval by ~10%
 	interval := (HeartbeatInterval*100_000 + time.Duration(rand.Int63n(10_000))) / 100_000
@@ -303,6 +352,7 @@ func (st *Local) reportHealth(ctx context.Context) {
 	}
 }
 
+//
 func (st *Local) reportStorage(ctx context.Context) {
 	st.localLk.RLock()
 
@@ -326,6 +376,7 @@ func (st *Local) reportStorage(ctx context.Context) {
 	}
 }
 
+// 分配任务的时候，根据worker 的任务数量，计算需要保留的空间 ，比如Reserved: 3.303 TiB
 func (st *Local) Reserve(ctx context.Context, sid storage.SectorRef, ft storiface.SectorFileType, storageIDs storiface.SectorPaths, overheadTab map[storiface.SectorFileType]int) (func(), error) {
 	ssize, err := sid.ProofType.SectorSize()
 	if err != nil {
@@ -353,17 +404,21 @@ func (st *Local) Reserve(ctx context.Context, sid storage.SectorRef, ft storifac
 			return nil, errPathNotFound
 		}
 
+		//先拿到当前storage的状态
 		stat, err := p.stat(st.localStorage)
 		if err != nil {
 			return nil, xerrors.Errorf("getting local storage stat: %w", err)
 		}
 
+		//
 		overhead := int64(overheadTab[fileType]) * int64(ssize) / storiface.FSOverheadDen
 
+		//如果空间不够
 		if stat.Available < overhead {
 			return nil, storiface.Err(storiface.ErrTempAllocateSpace, xerrors.Errorf("can't reserve %d bytes in '%s' (id:%s), only %d available", overhead, p.local, id, stat.Available))
 		}
 
+		//保留的空间 + 需要用的
 		p.reserved += overhead
 
 		prevDone := done
@@ -381,6 +436,7 @@ func (st *Local) Reserve(ctx context.Context, sid storage.SectorRef, ft storifac
 	return done, nil
 }
 
+// 比如finalize的时候，需要获取unsealed 和sealed目录的sectors数据
 func (st *Local) AcquireSector(ctx context.Context, sid storage.SectorRef, existing storiface.SectorFileType, allocate storiface.SectorFileType, pathType storiface.PathType, op storiface.AcquireMode) (storiface.SectorPaths, storiface.SectorPaths, error) {
 	if existing|allocate != existing^allocate {
 		return storiface.SectorPaths{}, storiface.SectorPaths{}, xerrors.New("can't both find and allocate a sector")
@@ -397,12 +453,52 @@ func (st *Local) AcquireSector(ctx context.Context, sid storage.SectorRef, exist
 	var out storiface.SectorPaths
 	var storageIDs storiface.SectorPaths
 
+	//Miner 的 是Storage 类型： 里面也有 cache，sealed，unsealed目录
+	//worker的是sealed 类型，里面也有 cache，sealed，unsealed目录
+
+	//var PathTypes = []SectorFileType{FTUnsealed, FTSealed, FTCache}，是 0，1，2
+	//FileType， 有三种： sealed， unsealed，cache， 对应的int是  0，1，2
+
+	//storiface.PathType 是 sealed ，storage两种
+	//storiface.SectorFileType 里面的
+	// type SectorFileType int
+	/**
+			func (t SectorFileType) String() string {
+		switch t {
+		case FTUnsealed:
+			return "unsealed"
+		case FTSealed:
+			return "sealed"
+		case FTCache:
+			return "cache"
+		default:
+			return fmt.Sprintf("<unknown %d>", t)
+		}
+	}
+		**/
 	for _, fileType := range storiface.PathTypes {
 		if fileType&existing == 0 {
 			continue
 		}
 
+		//fileType 是0，1，2 里面一个和 pathType是对应关系sealed， unsealed，cache
+
+		// 默然加的方法CheckDeclareSector， 比如 输入 sector id， 0， 32G， storage
 		si, err := st.CheckDeclareSector(ctx, sid.ID, fileType, ssize, pathType)
+		//si是下面的out
+		/**
+			out = append(out, SectorStorageInfo{
+			ID:     id,
+			URLs:   urls,
+			Weight: st.info.Weight * n, // storage with more sector types is better
+
+			CanSeal:  st.info.CanSeal,
+			CanStore: st.info.CanStore,
+
+			Primary: isprimary[id],
+
+		**/
+
 		if err != nil {
 			log.Warnf("finding existing sector %d(t:%d) failed: %+v", sid, fileType, err)
 			continue
@@ -477,6 +573,7 @@ func (st *Local) AcquireSector(ctx context.Context, sid storage.SectorRef, exist
 	return out, storageIDs, nil
 }
 
+//
 func (st *Local) Local(ctx context.Context) ([]StoragePath, error) {
 	st.localLk.RLock()
 	defer st.localLk.RUnlock()
@@ -486,6 +583,15 @@ func (st *Local) Local(ctx context.Context) ([]StoragePath, error) {
 		if p.local == "" {
 			continue
 		}
+
+		// 这个是StorageInfo
+		/**
+
+		"ID": "d4149b99-db8c-4aa8-91ad-ee644eed5ae4",
+		"Weight": 10,
+		"CanSeal": true,
+		"CanStore": false
+		**/
 
 		si, err := st.index.StorageInfo(ctx, id)
 		if err != nil {
@@ -589,6 +695,7 @@ func (st *Local) removeSector(ctx context.Context, sid abi.SectorID, typ storifa
 	return nil
 }
 
+// 移动storage 位置，一般是attach
 func (st *Local) MoveStorage(ctx context.Context, s storage.SectorRef, types storiface.SectorFileType) error {
 	dest, destIds, err := st.AcquireSector(ctx, s, storiface.FTNone, types, storiface.PathStorage, storiface.AcquireMove)
 	if err != nil {
@@ -648,6 +755,7 @@ func (st *Local) MoveStorage(ctx context.Context, s storage.SectorRef, types sto
 
 var errPathNotFound = xerrors.Errorf("fsstat: path not found")
 
+//
 func (st *Local) FsStat(ctx context.Context, id ID) (fsutil.FsStat, error) {
 	st.localLk.RLock()
 	defer st.localLk.RUnlock()
@@ -662,15 +770,43 @@ func (st *Local) FsStat(ctx context.Context, id ID) (fsutil.FsStat, error) {
 
 var _ Store = &Local{}
 
+// 默然加的 CheckDeclareSector， 相比StorageFindSector 多增加了判断
+// 比如 输入 sector id， 0， 32G， storage
+
+//这个可能不需要改
 func (st *Local) CheckDeclareSector(ctx context.Context, sid abi.SectorID, fileType storiface.SectorFileType, ssize abi.SectorSize, pathType storiface.PathType) ([]SectorStorageInfo, error) {
+
 	si0, err := st.index.StorageFindSector(ctx, sid, fileType, ssize, false)
+	//si0 是下面的out
+	/**  StorageFindSector 返回的值
+	out := make([]SectorStorageInfo, 0, len(storageIDs))
+
+	out = append(out, SectorStorageInfo{
+			ID:     id,
+			URLs:   urls,
+			Weight: st.info.Weight * n, // storage with more sector types is better
+
+			CanSeal:  st.info.CanSeal,
+			CanStore: st.info.CanStore,
+
+			Primary: isprimary[id],
+	**/
+	//如果找到这个sector
 	if len(si0) > 0 || err != nil {
 		return si0, err
 	}
+	//如果上面的没找到
+	//pathType 只有 storage  sealing两种；
+	//如果pathType 是sealing， 下面的if就没有了，再次return空的回去
+	//如果pathType 是“storage”，就还需要做下面的if
+	//storiface.PathStorage = “storage”
+
+	//这个是另外一种寻找方法
 	if pathType == storiface.PathStorage {
 		for id, path := range st.paths {
 			if sstInfo, err := st.index.StorageInfo(ctx, id); err == nil {
 				if sstInfo.CanStore {
+					//  p拼接完后 /root/.lotusminer/sealed/s-t08157-9999
 					p := filepath.Join(path.local, fileType.String(), storiface.SectorName(sid))
 					_, err := os.Stat(p)
 					if os.IsNotExist(err) || err != nil {
@@ -683,5 +819,6 @@ func (st *Local) CheckDeclareSector(ctx context.Context, sid abi.SectorID, fileT
 			}
 		}
 	}
+
 	return st.index.StorageFindSector(ctx, sid, fileType, ssize, false)
 }

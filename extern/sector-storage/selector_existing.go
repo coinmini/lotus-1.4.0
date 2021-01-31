@@ -19,6 +19,7 @@ type existingSelector struct {
 	allowFetch bool
 }
 
+// 这个是selctor 调用的函数
 func newExistingSelector(index stores.SectorIndex, sector abi.SectorID, alloc storiface.SectorFileType, allowFetch bool) *existingSelector {
 	return &existingSelector{
 		index:      index,
@@ -72,6 +73,7 @@ func (s *existingSelector) Cmp(ctx context.Context, task sealtasks.TaskType, a, 
 
 var _ WorkerSelector = &existingSelector{}
 
+// 下面是默然加的
 func (s *existingSelector) FindDataWoker(ctx context.Context, task sealtasks.TaskType, sid abi.SectorID, spt abi.RegisteredSealProof, whnd *workerHandle) bool {
 	tasks, err := whnd.workerRpc.TaskTypes(ctx)
 	if err != nil {
@@ -91,6 +93,7 @@ func (s *existingSelector) FindDataWoker(ctx context.Context, task sealtasks.Tas
 		have[path.ID] = struct{}{}
 	}
 
+	//
 	ssize, err := spt.SectorSize()
 	if err != nil {
 		return false
@@ -101,6 +104,7 @@ func (s *existingSelector) FindDataWoker(ctx context.Context, task sealtasks.Tas
 		return false
 	}
 
+	// 必须是同一个 storage ID 才可以
 	for _, info := range best {
 		if info.Weight != 0 { // 为0的权重是fecth来的，不是本地的
 			if _, ok := have[info.ID]; ok {

@@ -490,6 +490,7 @@ func (l *LocalWorker) Info(context.Context) (storiface.WorkerInfo, error) {
 		panic(err)
 	}
 
+	//这个if 是默然加的， 和/lotus-seal-worker/main.go 是对应改的
 	if env, ok := os.LookupEnv("WORKER_NAME"); ok {
 		hostname = hostname + "-" + env
 	}
@@ -514,6 +515,7 @@ func (l *LocalWorker) Info(context.Context) (storiface.WorkerInfo, error) {
 		memSwap = 0
 	}
 
+	//这里调用了 NewTaskLimitConfig， 默然修改了，让worker用ability的方式
 	return storiface.WorkerInfo{
 		Hostname:      hostname,
 		TaskResources: storiface.NewTaskLimitConfig(),

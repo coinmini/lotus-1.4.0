@@ -23,7 +23,8 @@ import (
 type WorkerInfo struct {
 	Hostname string
 
-	Resources       WorkerResources
+	Resources WorkerResources
+	//下面这个两个也是默然添加的
 	TaskResourcesLk sync.Mutex
 	TaskResources   map[sealtasks.TaskType]*TaskConfig
 }
@@ -151,6 +152,9 @@ type WorkerReturn interface {
 	ReturnFetch(ctx context.Context, callID CallID, err *CallError) error
 }
 
+// 下面是默然的代码，对应给worker 设置能分配的任务列别
+// --ablility =  AP:1, PC1:0,PC2:2,C1:1,C2:1,FIN:5,GET:5,UNS:1,RD:1
+
 type TaskConfig struct {
 	LimitCount int
 	RunCount   int
@@ -168,6 +172,7 @@ type taskLimitConfig struct {
 	ReadUnsealed int
 }
 
+//设置ability
 func NewTaskLimitConfig() map[sealtasks.TaskType]*TaskConfig {
 	config := &taskLimitConfig{
 		AddPiece:     1,
@@ -236,8 +241,10 @@ func NewTaskLimitConfig() map[sealtasks.TaskType]*TaskConfig {
 		}
 	}
 
+	//检查资源
 	cfgResources := make(map[sealtasks.TaskType]*TaskConfig)
 
+	//刚开始worker启动时候，ok肯定是false
 	if _, ok := cfgResources[sealtasks.TTAddPiece]; !ok {
 		cfgResources[sealtasks.TTAddPiece] = &TaskConfig{
 			LimitCount: config.AddPiece,
@@ -301,5 +308,6 @@ func NewTaskLimitConfig() map[sealtasks.TaskType]*TaskConfig {
 		}
 	}
 
+	//把config的资源返回
 	return cfgResources
 }
